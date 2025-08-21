@@ -1,21 +1,29 @@
 import jwt from 'jsonwebtoken';
 import { Request, Response, NextFunction } from 'express';
 
+export interface JwtPayload {
+  userId: string;
+  role: string;
+  iat?: number;
+  exp?: number;
+}
+
 declare global {
   namespace Express {
     interface Request {
-      user?: {
-        userId: string;
-        role: string;
-      };
+      user?: JwtPayload;
     }
   }
 }
 
-interface JwtPayload {
-  userId: string;
-  role: string;
-}
+export const generateAccessToken = (payload: Omit<JwtPayload, 'iat' | 'exp'>): string => {
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret) {
+    throw new Error('JWT_SECRET is not defined in environment variables');
+  }
+  
+  return jwt.sign(payload, jwtSecret, { expiresIn: '1d' });
+};
 
 export const authenticateToken = (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -47,56 +55,51 @@ export const authenticateToken = (req: Request, res: Response, next: NextFunctio
         details: 'JWT_SECRET environment variable is not set'
       });
     }
-    
+
     try {
-      // Verify token
       const decoded = jwt.verify(token, jwtSecret) as JwtPayload;
-      
-      // Validate userId and role
-      if (!decoded.userId || !decoded.role) {
-        console.error('Invalid token payload:', decoded);
-        return res.status(401).json({ 
-          error: 'Invalid token',
-          details: 'Token payload missing userId or role'
-        });
-      }
-      
-      // Add role to request
       req.user = {
         userId: decoded.userId,
         role: decoded.role
       };
-      
-      // Check if route requires admin access
-      const isAdminRoute = req.path.startsWith('/admin') || 
-                           req.path.startsWith('/dashboard/inquiries');
-      
-      if (isAdminRoute && decoded.role !== 'admin') {
-        return res.status(403).json({
-          error: 'Access denied',
-          details: 'Admin access required'
-        });
-      }
-      
       next();
     } catch (error) {
-      console.error('Token verification error:', error);
-      if (error instanceof jwt.JsonWebTokenError) {
-        return res.status(401).json({ 
-          error: 'Invalid or expired token',
-          details: error.message
+      console.error('Token verification failed:', error);
+      if (error instanceof jwt.TokenExpiredError) {
+        return res.status(401).json({
+          error: 'Token expired',
+          details: 'The provided token has expired. Please log in again.'
         });
       }
-      return res.status(500).json({ 
-        error: 'Internal server error',
-        details: 'Failed to verify token'
+      return res.status(403).json({
+        error: 'Invalid token',
+        details: 'Failed to authenticate token. It may be invalid or tampered with.'
       });
     }
   } catch (error) {
     console.error('Authentication error:', error);
-    return res.status(500).json({ 
-      error: 'Internal server error',
-      details: 'Failed to authenticate request'
+    return res.status(500).json({
+      error: 'Authentication failed',
+      details: 'An error occurred during authentication'
     });
+  }
+};
+
+// Helper function to extract user from token (for use in API routes)
+export const getUserFromToken = (token: string): JwtPayload | null => {
+  try {
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) {
+      throw new Error('JWT_SECRET is not defined in environment variables');
+    }
+    
+    const decoded = jwt.verify(token, jwtSecret) as JwtPayload;
+    return {
+      userId: decoded.userId,
+      role: decoded.role
+    };
+  } catch (error) {
+    console.error('Error getting user from token:', error);
+    return null;
   }
 };
